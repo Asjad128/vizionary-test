@@ -44,6 +44,10 @@ function CareerVisualizer({ role, onLogout }) {
   const [careerImage, setCareerImage] = useState(null);
   const [listening, setListening] = useState(false);
   const [recognition, setRecognition] = useState(null);
+  const [recognizedText, setRecognizedText] = useState("");
+  const [showValidation, setShowValidation] = useState(false);
+  const [validationData, setValidationData] = useState({ name: "", career: "" });
+  const [confirmedData, setConfirmedData] = useState({ name: "", career: "" });
 
   const transcriptRef = useRef("");
   const recognitionTimeoutRef = useRef(null);
@@ -170,13 +174,44 @@ function CareerVisualizer({ role, onLogout }) {
     }
   }, []);
 
+  const cleanupTranscript = useCallback((text) => {
+    // Find the last occurrence of sentence start patterns and keep only from there
+    const patterns = [
+      /my name is/i,
+      /i am/i,
+      /my dream/i,
+      /name is/i
+    ];
+
+    let lastIndex = 0;
+    
+    for (const pattern of patterns) {
+      const matches = text.matchAll(new RegExp(pattern, 'gi'));
+      let lastMatch = null;
+      
+      for (const match of matches) {
+        lastMatch = match;
+      }
+      
+      if (lastMatch && lastMatch.index > lastIndex) {
+        lastIndex = lastMatch.index;
+      }
+    }
+
+    // Return from the last sentence start onwards
+    return lastIndex > 0 ? text.substring(lastIndex) : text;
+  }, []);
+
   const extractNameAndCareer = useCallback((text) => {
-    const cleanText = text.toLowerCase().replace(/[^a-z0-9\s]/g, "");
+    // First, clean up duplicate transcripts - keep only the last/clearest sentence
+    const cleanedText = cleanupTranscript(text);
+    const cleanText = cleanedText.toLowerCase().replace(/[^a-z0-9\s]/g, "");
     let n = "";
     let c = "";
 
     const knownCareers = Object.keys(careerImages);
 
+    // Try to match known careers
     for (const careerKey of knownCareers) {
       const regex = new RegExp(`\\b${careerKey}\\b`, 'i');
       if (regex.test(cleanText)) {
@@ -185,32 +220,70 @@ function CareerVisualizer({ role, onLogout }) {
       }
     }
 
+    // Helper function to cleanup and validate career names
+    const cleanupCareerName = (careerPhrase) => {
+      const stopWords = ["doctor", "engineer", "good", "great", "my", "and", "to", "be", "a", "an", "the", "or", "want", "going", "is", "name"];
+      let cleaned = careerPhrase
+        .replace(/\s+(my|and|to|be|a|an|the|or|want|going|is|name)\s*$/i, "")
+        .replace(/\s+my\s+name.*$/i, "")
+        .trim();
+      
+      // Limit to first 3 words for career
+      const words = cleaned.split(/\s+/).slice(0, 3).join(" ");
+      
+      if (!stopWords.includes(words) && words.length > 2) {
+        return words;
+      }
+      return "";
+    };
+
+    // If no known career found, try to extract unknown careers
     if (!c) {
-      const unknownCareerRegex = /(?:want to be|become|will be)\s+(?:a|an)\s+([a-z]+)/i;
-      const match = cleanText.match(unknownCareerRegex);
+      // Pattern 1: "want to be a [career]" - stop at period or end
+      let match = cleanText.match(/want\s+to\s+be\s+(?:a|an)?\s+([a-z\s]+?)(?:\.|$)/i);
       if (match && match[1]) {
-        const stopWords = ["doctor", "engineer", "good", "great"];
-        if (!stopWords.includes(match[1])) {
-          c = match[1];
+        c = cleanupCareerName(match[1].trim());
+      }
+      
+      // Pattern 2: "become [career]"
+      if (!c) {
+        match = cleanText.match(/become\s+(?:a|an)?\s+([a-z\s]+?)(?:\.|$)/i);
+        if (match && match[1]) {
+          c = cleanupCareerName(match[1].trim());
+        }
+      }
+      
+      // Pattern 3: any remaining text after "want to be" up to end
+      if (!c) {
+        match = cleanText.match(/want\s+to\s+be\s+([a-z\s]+)$/i);
+        if (match && match[1]) {
+          c = cleanupCareerName(match[1].trim());
         }
       }
     }
 
-    const nameRegex = /(?:my name is|i am|i'm|name is|this is)\s+([a-z]+)/i;
-    const match = cleanText.match(nameRegex);
-
-    if (match && match[1]) {
-      let potentialName = match[1];
-      potentialName = potentialName.replace(/my$/, "").replace(/and$/, "");
-      const stopWords = ["a", "an", "the", "i", "and", "want", "going", "to", "become", "will", "student"];
-      if (!stopWords.includes(potentialName) && potentialName.length > 2) {
-        n = potentialName;
+    // Extract name - look for "name is [word]"
+    let nameMatch = cleanText.match(/name\s+is\s+([a-z]+)/i);
+    
+    if (nameMatch && nameMatch[1]) {
+      n = nameMatch[1].trim();
+    } else {
+      // Try "i am [name]"
+      nameMatch = cleanText.match(/i\s+am\s+([a-z]+)/i);
+      if (nameMatch && nameMatch[1]) {
+        n = nameMatch[1].trim();
       }
+    }
+
+    // Validate name - must be a real name, not a keyword
+    const nameStopWords = ["a", "an", "the", "i", "and", "want", "going", "to", "become", "will", "student", "be", "career", "job", "is", "software", "engineer", "developer"];
+    if (nameStopWords.includes(n.toLowerCase()) || n.length < 2) {
+      n = "";
     }
 
     n = n ? n.charAt(0).toUpperCase() + n.slice(1) : "";
     return { name: n, career: c || null };
-  }, [careerImages]);
+  }, [careerImages, cleanupTranscript]);
 
   const processVoiceCommand = useCallback((transcript) => {
     const { name: dName, career: dCareer } = extractNameAndCareer(transcript);
@@ -311,7 +384,11 @@ function CareerVisualizer({ role, onLogout }) {
       setListening(false);
       clearTimeout(recognitionTimeoutRef.current);
       if (transcriptRef.current && transcriptRef.current.trim().length > 0) {
-        processVoiceCommand(transcriptRef.current.toLowerCase());
+        const extracted = extractNameAndCareer(transcriptRef.current.toLowerCase());
+        // Show validation screen for user confirmation
+        setRecognizedText(transcriptRef.current);
+        setValidationData(extracted);
+        setShowValidation(true);
       } else {
         setStage("manual");
       }
@@ -688,6 +765,433 @@ function CareerVisualizer({ role, onLogout }) {
                   </div>
                 )}
               </motion.div>
+            )}
+
+            {showValidation && !validationData.career && (
+              <motion.div
+                key="validation"
+                style={{
+                  padding: '32px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '24px',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  maxWidth: '600px',
+                  width: '100%'
+                }}
+                variants={pageVariants} initial="initial" animate="in" exit="out" transition={pageTransition}
+              >
+                <div style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                  backdropFilter: 'blur(10px)',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  borderRadius: '20px',
+                  padding: '24px',
+                  textAlign: 'center',
+                  width: '100%'
+                }}>
+                  <p style={{
+                    color: 'white',
+                    fontSize: '16px',
+                    marginBottom: '16px',
+                    opacity: 0.9
+                  }}>You said:</p>
+                  <div style={{
+                    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                    padding: '16px',
+                    borderRadius: '12px',
+                    color: 'white',
+                    fontSize: '14px',
+                    marginBottom: '16px',
+                    minHeight: '40px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}>
+                    "{recognizedText}"
+                  </div>
+                  <p style={{
+                    color: '#fbbf24',
+                    fontSize: '14px',
+                    marginTop: '8px'
+                  }}>Couldn't extract career info. Please confirm or try again.</p>
+                </div>
+
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                  width: '100%'
+                }}>
+                  <motion.button
+                    onClick={() => {
+                      setShowValidation(false);
+                      startVoiceRecognition();
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      width: '100%',
+                      color: 'white',
+                      fontSize: '16px',
+                      fontWeight: '600',
+                      padding: '12px',
+                      borderRadius: '12px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                      transition: 'all 0.3s ease'
+                    }}
+                    whileHover={{ scale: 1.05, backgroundColor: 'rgba(59, 130, 246, 0.7)' }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    <Mic size={18} /> Try Again
+                  </motion.button>
+
+                  <motion.button
+                    onClick={() => {
+                      setShowValidation(false);
+                      setStage("manual");
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      width: '100%',
+                      color: 'white',
+                      fontSize: '16px',
+                      fontWeight: '600',
+                      padding: '12px',
+                      borderRadius: '12px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      backgroundColor: 'rgba(107, 114, 128, 0.5)',
+                      transition: 'all 0.3s ease'
+                    }}
+                    whileHover={{ scale: 1.05, backgroundColor: 'rgba(107, 114, 128, 0.7)' }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    <Send size={18} /> Type Manually
+                  </motion.button>
+                </div>
+              </motion.div>
+            )}
+
+            {showValidation && validationData.career && (
+              <motion.div
+                key="validation-success"
+                style={{
+                  padding: '32px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '24px',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  maxWidth: '600px',
+                  width: '100%'
+                }}
+                variants={pageVariants} initial="initial" animate="in" exit="out" transition={pageTransition}
+              >
+                <div style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                  backdropFilter: 'blur(10px)',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  borderRadius: '20px',
+                  padding: '24px',
+                  textAlign: 'center',
+                  width: '100%'
+                }}>
+                  <p style={{
+                    color: 'white',
+                    fontSize: '16px',
+                    marginBottom: '16px',
+                    fontWeight: '600'
+                  }}>You said:</p>
+                  <div style={{
+                    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                    padding: '16px',
+                    borderRadius: '12px',
+                    color: 'white',
+                    fontSize: '14px',
+                    marginBottom: '24px'
+                  }}>
+                    "{recognizedText}"
+                  </div>
+
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: '12px',
+                    marginBottom: '16px'
+                  }}>
+                    <div style={{
+                      padding: '12px',
+                      backgroundColor: 'rgba(34, 197, 94, 0.2)',
+                      borderRadius: '10px',
+                      border: '1px solid rgba(34, 197, 94, 0.3)'
+                    }}>
+                      <p style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '4px' }}>Name</p>
+                      <p style={{ fontSize: '16px', fontWeight: '600', color: '#86efac' }}>{validationData.name || "—"}</p>
+                    </div>
+                    <div style={{
+                      padding: '12px',
+                      backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                      borderRadius: '10px',
+                      border: '1px solid rgba(59, 130, 246, 0.3)'
+                    }}>
+                      <p style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '4px' }}>Career</p>
+                      <p style={{ fontSize: '16px', fontWeight: '600', color: '#93c5fd' }}>{validationData.career}</p>
+                    </div>
+                  </div>
+
+                  <p style={{
+                    color: '#fbbf24',
+                    fontSize: '14px'
+                  }}>Is this correct?</p>
+                </div>
+
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                  width: '100%'
+                }}>
+                  <motion.button
+                    onClick={() => {
+                      setShowValidation(false);
+                      setConfirmedData(validationData);
+                      setStage("confirm-name");
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      width: '100%',
+                      color: 'white',
+                      fontSize: '16px',
+                      fontWeight: '600',
+                      padding: '12px',
+                      borderRadius: '12px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      background: 'linear-gradient(to right, #22c55e, #059669)',
+                      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+                      transition: 'all 0.3s ease'
+                    }}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    ✓ Yes, Confirm
+                  </motion.button>
+
+                  <motion.button
+                    onClick={() => {
+                      setShowValidation(false);
+                      startVoiceRecognition();
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      width: '100%',
+                      color: 'white',
+                      fontSize: '16px',
+                      fontWeight: '600',
+                      padding: '12px',
+                      borderRadius: '12px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                      transition: 'all 0.3s ease'
+                    }}
+                    whileHover={{ scale: 1.05, backgroundColor: 'rgba(59, 130, 246, 0.7)' }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    <Mic size={18} /> No, Try Again
+                  </motion.button>
+
+                  <motion.button
+                    onClick={() => {
+                      setShowValidation(false);
+                      setStage("manual");
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      width: '100%',
+                      color: 'white',
+                      fontSize: '16px',
+                      fontWeight: '600',
+                      padding: '12px',
+                      borderRadius: '12px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      backgroundColor: 'rgba(107, 114, 128, 0.5)',
+                      transition: 'all 0.3s ease'
+                    }}
+                    whileHover={{ scale: 1.05, backgroundColor: 'rgba(107, 114, 128, 0.7)' }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    <Send size={18} /> Type Manually
+                  </motion.button>
+                </div>
+              </motion.div>
+            )}
+
+            {stage === "confirm-name" && (
+              <motion.form
+                key="confirm-name"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const careerData = getCareerData(confirmedData.career, name);
+                  setCareerImage(careerData);
+                  setStage("result");
+                  stableSaveRecord(name, confirmedData.career);
+                }}
+                style={{
+                  padding: '24px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '24px'
+                }}
+                variants={pageVariants} initial="initial" animate="in" exit="out" transition={pageTransition}
+              >
+                <p style={{
+                  textAlign: 'center',
+                  color: 'white',
+                  opacity: 0.9,
+                  fontSize: '16px'
+                }}>Please confirm your name spelling.</p>
+                
+                <div style={{
+                  position: 'relative',
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  borderBottom: '2px solid rgba(255, 255, 255, 0.3)',
+                  transition: 'all 0.3s ease'
+                }}>
+                  <User size={20} style={{
+                    color: 'white',
+                    marginRight: '12px',
+                    opacity: 0.7,
+                    flex: '0 0 auto'
+                  }} />
+                  <input
+                    type="text"
+                    placeholder="Your name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    style={{
+                      width: '100%',
+                      backgroundColor: 'transparent',
+                      color: 'white',
+                      padding: '8px 0',
+                      border: 'none',
+                      outline: 'none',
+                      fontSize: '18px'
+                    }}
+                  />
+                </div>
+
+                <div style={{
+                  position: 'relative',
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  borderBottom: '2px solid rgba(255, 255, 255, 0.3)',
+                  transition: 'all 0.3s ease',
+                  opacity: 0.6,
+                  pointerEvents: 'none'
+                }}>
+                  <Briefcase size={20} style={{
+                    color: 'white',
+                    marginRight: '12px',
+                    opacity: 0.7,
+                    flex: '0 0 auto'
+                  }} />
+                  <input
+                    type="text"
+                    placeholder="Your dream career"
+                    value={confirmedData.career}
+                    disabled
+                    style={{
+                      width: '100%',
+                      backgroundColor: 'transparent',
+                      color: 'white',
+                      padding: '8px 0',
+                      border: 'none',
+                      outline: 'none',
+                      fontSize: '18px',
+                      cursor: 'not-allowed',
+                      opacity: 0.7
+                    }}
+                  />
+                </div>
+
+                <motion.button
+                  type="submit"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    width: '100%',
+                    color: 'white',
+                    fontSize: '18px',
+                    fontWeight: '600',
+                    padding: '12px',
+                    borderRadius: '12px',
+                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+                    marginTop: '16px',
+                    background: 'linear-gradient(to right, #22c55e, #059669)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.3s ease'
+                  }}
+                  whileHover={{ scale: 1.05, boxShadow: "0px 8px 20px rgba(0,0,0,0.3)" }}
+                  whileTap={{ scale: 0.95 }}
+                  transition={{ type: "spring", stiffness: 400, damping: 10 }}
+                >
+                  ✓ Confirm
+                </motion.button>
+
+                <motion.button
+                  type="button"
+                  onClick={() => {
+                    setShowValidation(false);
+                    startVoiceRecognition();
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    width: '100%',
+                    color: 'white',
+                    fontSize: '16px',
+                    fontWeight: '600',
+                    padding: '12px',
+                    borderRadius: '12px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                    transition: 'all 0.3s ease'
+                  }}
+                  whileHover={{ scale: 1.05, backgroundColor: 'rgba(59, 130, 246, 0.7)' }}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  <Mic size={18} /> Try Again
+                </motion.button>
+              </motion.form>
             )}
 
             {stage === "manual" && (
