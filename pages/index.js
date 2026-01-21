@@ -483,14 +483,40 @@ function CareerVisualizer({ role, onLogout }) {
   };
 
   const handleNextCandidate = () => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-    setName("");
-    setCareer("");
-    setCareerImage(null);
+  // Stop any ongoing speech
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
+
+  // Stop and cleanup old camera stream
+  if (streamRef.current) {
+    streamRef.current.getTracks().forEach(track => track.stop());
+    streamRef.current = null;
+  }
+
+  // Reset video element
+  if (videoRef.current) {
+    videoRef.current.srcObject = null;
+  }
+
+  // Reset all data
+  setName("");
+  setCareer("");
+  setCareerImage(null);
+  setRecognizedText("");
+  setValidationData({ name: "", career: "" });
+  setConfirmedData({ name: "", career: "" });
+  setShowValidation(false);
+
+  // IMPORTANT: go through start → camera_demo to retrigger effect cleanly
+  setStage("start");
+
+  // Small delay, then reopen camera
+  setTimeout(() => {
     setStage("camera_demo");
-  };
+  }, 100);
+};
+
 
   const handleManualSubmit = (e) => {
     e.preventDefault();
