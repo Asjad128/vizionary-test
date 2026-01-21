@@ -962,9 +962,10 @@ function CareerVisualizer({ role, onLogout }) {
                 }}>
                   <motion.button
                     onClick={() => {
-                      setShowValidation(false);
-                      setConfirmedData(validationData);
-                      setStage("confirm-name");
+                        setShowValidation(false);
+                        setName(validationData.name || "");
+                        setConfirmedData(validationData);
+                        setStage("confirm-name");
                     }}
                     style={{
                       display: 'flex',
